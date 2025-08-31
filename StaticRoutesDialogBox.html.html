@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      padding: 20px;
+      font-size: medium;
+    }
+
+    h2 {
+      margin-top: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+    }
+
+    h3.subhead {
+      margin: 20px 0 6px;
+      font-size: 1rem;   
+      font-weight: 600;
+      color: #333;
+    }
+
+    th, td {
+      border: 1px solid #ccc;
+      padding: 6px 8px;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    th {
+      background: #f0f0f0;
+    }
+
+    .col-checkbox {
+      width: 40px;
+    }
+
+    .col-name {
+      width: 150px;
+    }
+
+    .col-dest {
+      width: 180px;
+    }
+
+    .col-iface {
+      width: 140px;
+    }
+
+    .col-nexthop {
+      width: 180px;
+    }
+
+    .col-metric {
+      width: 60px;
+      text-align: center;
+    }
+
+    .col-monitor {
+      width: 80px;
+      text-align: center;
+    }
+
+    .btn-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .btn-row button {
+      flex: 1;
+      padding: 10px;
+      font-size: medium;
+      min-width: 100px;
+    }
+  </style>
+</head>
+<body>
+  <h2 id="staticRouteTitle">Static Routes for Logical Router: (loading...)</h2>
+
+  <!-- Main Static Routes Table Section -->
+  <div id="routesSection">
+    <div id="routeTableWrapper">
+      <table id="routesTable">
+        <thead>
+          <tr>
+            <th class="col-checkbox"></th>
+            <th class="col-name">Name</th>
+            <th class="col-dest">Destination</th>
+            <th class="col-iface">Interface</th>
+            <th class="col-nexthop">Next Hop</th>
+            <th class="col-metric">Metric</th>
+            <th class="col-monitor">Path Monitor</th>
+          </tr>
+        </thead>
+        <tbody id="routeTableBody">
+          <!-- JS will inject rows here -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h3 class="subhead">New static route</h3>
+  <table id="newRouteTable">
+    <thead>
+      <tr>
+        <th class="col-name">Name</th>
+        <th class="col-dest">Destination</th>
+        <th class="col-iface">Interface</th>
+        <th class="col-nexthop">Next Hop Type</th>
+        <th class="col-nexthop">Next Hop</th>
+        <th class="col-metric">Metric</th>
+        <th class="col-monitor">Path Monitor</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <!-- name -->
+        <td>
+          <input id="newRouteName" type="text" placeholder="e.g. BRANCH_DEFAULT"
+                 style="width:100%;">
+        </td>
+        <!-- destination -->
+        <td>
+          <input id="newRouteDest" type="text"
+                 placeholder="1.2.3.4/24 or $VARNAME"
+                 style="width:100%;">
+        </td>
+        <!-- interface (to be populated from VRF interfaces later) -->
+        <td>
+          <select id="newRouteIface" style="width:100%;">
+            <option value="">— select —</option>
+            <!-- options injected by JS later -->
+          </select>
+        </td>
+        <!-- next hop type -->
+        <td>
+          <select id="newRouteNextHopType" style="width:100%;" onchange="updateNextHopInputState()">
+            <option value="none">None</option>
+            <option value="discard">Discard</option>
+            <option value="ip">IP Address</option>
+            <option value="next_lr">Next Router</option>
+            <option value="fqdn">FQDN</option>
+          </select>
+        </td>
+        <!-- next hop value -->
+        <td>
+          <input id="newRouteNextHop" type="text" placeholder="—" style="width:100%;" disabled list="datalistNextHop" />
+          <select id="newRouteNextHopSelect" style="width:100%; display:none;"></select>
+          <datalist id="datalistNextHop"></datalist>
+          <div style="margin-top:4px; font-size:.875rem;">
+            <a href="#" onclick="refreshNextHopSources(); return false;">↻ refresh options</a>
+          </div>
+        </td>
+        <!-- metric -->
+        <td style="text-align:center;">
+          <input id="newRouteMetric" type="number" min="1" step="1" value="10"
+                 style="width:70px; text-align:right;">
+        </td>
+        <!-- path monitor -->
+        <td style="text-align:center;">
+          <select id="newRouteMonitor" style="width:100%;">
+            <option value="no" selected>no</option>
+            <option value="yes">yes</option>
+          </select>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Action Buttons -->
+  <div class="btn-row">
+    <button onclick="handleCreate()">➕ Create Route</button>
+    <button onclick="handleDelete()">➖ Delete Route</button>
+    <button onclick="handleCancel()">Cancel</button>
+  </div>
+  
+  <script>
+
+    let selectedVrfName = "";
+    let selectedVrfId = "";
+    let snippetIpVars = [];    
+    let snippetFqdnVars = [];  
+    let snippetVrfs = [];  
+
+    function handleCreate() {
+      const name = document.getElementById("newRouteName").value.trim();
+      const destination = document.getElementById("newRouteDest").value.trim();
+      const iface = document.getElementById("newRouteIface").value;
+      const nextHopType = document.getElementById("newRouteNextHopType").value;
+      const nextHop = document.getElementById("newRouteNextHop").value.trim();
+      const nextHopVrf  = document.getElementById("newRouteNextHopSelect").value;
+      const metric = document.getElementById("newRouteMetric").value;
+      const monitor = document.getElementById("newRouteMonitor").value; // "yes" | "no"
+
+      //const nextHop = (nextHopType === "next_lr") ? nextHopVrf : nextHopText;
+   
+      if (!name) return alert("Please enter a route Name.");
+      if (!destination) return alert("Please enter a Destination (CIDR or variable).");
+
+      if ((nextHopType === "ip" || nextHopType === "fqdn" || nextHopType === "next_lr") && !nextHop) {
+        return alert("Please provide a Next Hop value.");
+      }
+      
+      const btns = document.querySelectorAll(".btn-row button");
+      btns.forEach(b => b.disabled = true);
+
+      const payload = {
+        name,
+        destination,
+        iface,           // may be ""
+        nextHopType,     // none | discard | ip | next_lr | fqdn
+        nextHop,         // may be ""
+        metric,
+        monitor          // "yes" or "no"
+      };
+
+      google.script.run
+        .withSuccessHandler(res => {
+          const action = res.updated ? "updated" : "created";
+          google.script.run.logVrf(`✅ Static route '${name}' ${action} in '${selectedVrfName}'`);
+          alert(`✅ Route '${name}' ${action}.`);
+          // clear inputs (optional)
+          // document.getElementById("newRouteName").value = "";
+          // document.getElementById("newRouteDest").value = "";
+          // document.getElementById("newRouteIface").value = "";
+          // document.getElementById("newRouteNextHopType").value = "none";
+          // document.getElementById("newRouteNextHop").value = "";
+          // document.getElementById("newRouteMetric").value = "10";
+          // document.getElementById("newRouteMonitor").value = "no";
+          // update Next Hop field state if you reset the type:
+          // updateNextHopInputState();
+
+          loadStaticRoutes();
+          btns.forEach(b => b.disabled = false);
+        })
+        .withFailureHandler(err => {
+          google.script.run.logVrf(`❌ Create route failed: ${err.message}`);
+          alert(`❌ Failed to create route:\n${err.message}`);
+          btns.forEach(b => b.disabled = false);
+        })
+        .createStaticRouteForVrf(selectedVrfName, payload );
+        ///.createStaticRouteForVrf(selectedVrfName, payload, true) to replace same-name-routes.
+        /// otherwise same-name-exists will throw backend error
+    }
+
+    function handleDelete() {
+      const selected = getSelectedRouteNames();
+      if (selected.length === 0) {
+        alert("Select at least one route to delete.");
+        return;
+      }
+      if (!confirm(`Delete ${selected.length} route(s):\n- ${selected.join("\n")}\n\nAre you sure?`)) {
+        return;
+      }
+      // UI: prevent double-clicks
+      const btns = document.querySelectorAll(".btn-row button");
+      btns.forEach(b => b.disabled = true);
+
+      google.script.run
+        .withSuccessHandler(res => {
+          google.script.run.logVrf(`🗑️ Deleted routes from '${selectedVrfName}': ${res.removed.join(", ")}`);
+          alert(`✅ Deleted ${res.removed.length} route(s).`);
+          loadStaticRoutes();            // refresh the table
+          btns.forEach(b => b.disabled = false);
+        })
+        .withFailureHandler(err => {
+          google.script.run.logVrf(`❌ Delete routes failed: ${err.message}`);
+          alert(`❌ Failed to delete routes:\n${err.message}`);
+          btns.forEach(b => b.disabled = false);
+        })
+        .removeStaticRoutesFromVrf(selectedVrfName, selected);
+    }    
+
+    function handleCancel() {
+      google.script.host.close();
+    }
+
+    function refreshInterfaces() {
+      google.script.run
+        .withSuccessHandler(list => {
+          populateInterfaceSelect(list);
+        })
+        .withFailureHandler(err => {
+          console.error("Failed to refresh interfaces:", err);
+        })
+        .getVrfInterfacesForDialog();
+    }
+
+    function guardInterfaceOpen(e) {
+      const sel = e.currentTarget;
+      if (sel.disabled || sel.options.length === 0) {
+        alert("The Logical Router exists in the snippet but has no Interfaces assigned. You need to have Interfaces assigned if you want to define static routes!");
+        e.preventDefault?.();
+        return false;
+      }
+      return true;
+    }
+
+
+    function populateInterfaceSelect(interfaces) {
+      const sel = document.getElementById("newRouteIface");
+      if (!sel) return;
+      sel.innerHTML = ""; // clear
+
+      if (!interfaces || interfaces.length === 0) {
+        // keep it disabled; user will get a warning on focus/open
+        sel.disabled = true;
+        return;
+      }
+
+      sel.disabled = false;
+          const ph = document.createElement("option");
+      ph.value = "";
+      ph.textContent = "-- choose interface --";
+      sel.appendChild(ph);
+
+      interfaces.forEach(ifName => {
+        const opt = document.createElement("option");
+        opt.value = ifName;
+        opt.textContent = ifName;
+        sel.appendChild(opt);
+      });
+    }
+
+    function refreshNextHopSources() {
+      google.script.run
+        .withSuccessHandler(list => { snippetIpVars = list || []; if (isIpMode()) fillDatalistForIp(); })
+        .withFailureHandler(err => console.warn("IP vars load failed:", err))
+        .getSnippetVariablesForDialog("ip");
+
+      google.script.run
+        .withSuccessHandler(list => { snippetFqdnVars = list || []; if (isFqdnMode()) fillDatalistForFqdn(); })
+        .withFailureHandler(err => console.warn("FQDN vars load failed:", err))
+        .getSnippetVariablesForDialog("fqdn");
+
+      google.script.run
+        .withSuccessHandler(list => { snippetVrfs = list || []; if (isNextLrMode()) fillVrfSelect(); })
+        .withFailureHandler(err => console.warn("VRF list load failed:", err))
+        .getVrfNamesForDialog();
+    }
+
+    function isIpMode()    { return document.getElementById("newRouteNextHopType").value === "ip"; }
+    function isFqdnMode()  { return document.getElementById("newRouteNextHopType").value === "fqdn"; }
+    function isNextLrMode(){ return document.getElementById("newRouteNextHopType").value === "next_lr"; }
+
+    function fillDatalistForIp() {
+      const dl = document.getElementById("datalistNextHop");
+      dl.innerHTML = "";
+      snippetIpVars.forEach(v => {
+        const o = document.createElement("option");
+        o.value = v; dl.appendChild(o);
+      });
+    }
+
+    function fillDatalistForFqdn() {
+      const dl = document.getElementById("datalistNextHop");
+      dl.innerHTML = "";
+      snippetFqdnVars.forEach(v => {
+        const o = document.createElement("option");
+        o.value = v; dl.appendChild(o);
+      });
+    }
+
+    function fillVrfSelect() {
+      const sel = document.getElementById("newRouteNextHopSelect");
+      sel.innerHTML = "";
+      const ph = document.createElement("option");
+      ph.value = ""; ph.textContent = "— select VRF —";
+      sel.appendChild(ph);
+
+      // exclude the current VRF if you don't want self-reference
+      snippetVrfs.forEach(v => {
+        if (!selectedVrfName || v !== selectedVrfName) {
+          const o = document.createElement("option");
+          o.value = o.textContent = v;
+          sel.appendChild(o);
+        }
+      });
+    }
+
+    function initStaticRouteDialog() {
+      google.script.run
+        .withSuccessHandler(info => {
+          google.script.run.logVrf(`🧪 Props check → name=${info && info.name ? info.name : "(none)"} id=${info && info.id ? info.id : "(none)"} hasObject=${info && info.hasObject ? "true" : "false"}`);
+        })
+        .withFailureHandler(err => {
+          google.script.run.logVrf(`❌ debugStaticRouteProps failed: ${err && err.message ? err.message : err}`);
+        })
+        .debugStaticRouteProps();
+
+      google.script.run
+        .withSuccessHandler(ctx => {
+          selectedVrfName = ctx.name;
+          selectedVrfId = ctx.id;
+
+          document.getElementById("staticRouteTitle").textContent =
+            `Static Routes for Logical Router: ${selectedVrfName}`;
+
+          populateInterfaceSelect(ctx.interfaces);
+          refreshInterfaces();
+          google.script.run.logVrf(
+            `📥 Static Route Dialog loaded for VRF ${selectedVrfName} (UUID: ${selectedVrfId})`
+          );
+          google.script.run.logVrf("🚚 Calling getStaticRoutesForDialog()");
+          loadStaticRoutes();
+        })
+        .withFailureHandler(err => {
+          const msg = err && err.message ? err.message : String(err); // 🔧 add log
+          google.script.run.logVrf(`❌ getStaticRouteContext failed: ${msg}`);
+          document.getElementById("staticRouteTitle").textContent = "Static Routes: Error loading VRF";
+          alert("❌ Failed to get static route context:\n" + msg);
+        })
+        .getStaticRouteContext();
+    }
+
+    function loadStaticRoutes() {
+      google.script.run
+        .withSuccessHandler(renderRouteTable)
+        .withFailureHandler(err => {
+          alert(":x: Failed to load static routes: " + err.message);
+        })
+        .getStaticRoutesForDialog();
+    }
+
+    function getSelectedRouteNames() {
+      const tbody = document.getElementById("routeTableBody");
+      const checks = tbody.querySelectorAll('input.route-checkbox:checked');
+      const names = [];
+      checks.forEach(cb => {
+        const row = cb.closest("tr");
+        const nameCell = row.children[1];
+       const name = nameCell?.textContent?.trim();
+      if (name) names.push(name);
+      });
+      return names;
+    }
+
+    function updateNextHopInputState() {
+      const type = document.getElementById("newRouteNextHopType").value;
+      const input = document.getElementById("newRouteNextHop");
+      const sel   = document.getElementById("newRouteNextHopSelect");
+
+      input.style.display = "";
+      sel.style.display = "none";
+      input.value = ""; sel.value = "";
+
+      if (type === "none" || type === "discard") {
+        input.disabled = true;
+        input.placeholder = "—";
+        document.getElementById("datalistNextHop").innerHTML = "";
+      } else if (type === "ip") {
+        input.disabled = false;
+        input.placeholder = "Enter IP or $VAR";
+        fillDatalistForIp();
+      } else if (type === "fqdn") {
+        input.disabled = false;
+        input.placeholder = "Enter FQDN or $VAR";
+        fillDatalistForFqdn();
+      } else if (type === "next_lr") {
+        input.disabled = true;
+        input.style.display = "none";
+        sel.style.display = "";
+        fillVrfSelect();
+      }
+    }
+
+    function renderRouteTable(routes) {
+      const tbody = document.getElementById("routeTableBody");
+      tbody.innerHTML = "";
+      if (!routes.length) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;">No static routes found</td></tr>`;
+        return;
+      }
+      routes.forEach((route, i) => {
+        const row = document.createElement("tr");
+        const checkbox = document.createElement("td");
+        checkbox.innerHTML = `<input type="checkbox" class="route-checkbox" data-index="${i}">`;
+        row.appendChild(checkbox);
+        const name = route.name || "";
+        const dest = route.destination || "";
+        const intf = route.interface || "";
+        const metric = route.metric || "";
+        const monitor = route.path_monitor?.enable ? "yes" : "no";
+        let nexthop = "";
+        if (route.nexthop?.ip_address) nexthop = route.nexthop.ip_address;
+        else if (route.nexthop?.fqdn) nexthop = route.nexthop.fqdn;
+        else if (route.nexthop?.next_lr) nexthop = `VRF: ${route.nexthop.next_lr}`;
+        const cells = [name, dest, intf, nexthop, metric, monitor];
+        cells.forEach(text => {
+          const td = document.createElement("td");
+          td.textContent = text;
+          row.appendChild(td);
+        });
+        tbody.appendChild(row);
+      });
+    }
+    window.onload = initStaticRouteDialog;
+    window.addEventListener("load", () => {
+      const sel = document.getElementById("newRouteIface");
+      if (sel) {
+        sel.addEventListener("mousedown", guardInterfaceOpen); // covers clicks
+        sel.addEventListener("focus", guardInterfaceOpen);     // keyboard users
+      }
+      refreshNextHopSources();
+      updateNextHopInputState();
+    });
+  </script>
+</body>
+</html>

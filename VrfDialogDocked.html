@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 20px; font-size: medium; }
+    h3 { margin-bottom: 0; }
+    hr { margin: 20px 0; }
+    .section { margin-bottom: 25px; }
+    label { display: block; margin-top: 8px; }
+    select, input[type="text"], textarea {
+      width: 100%; padding: 6px; box-sizing: border-box;
+    }
+    textarea { resize: verticathe code with the same info asl; min-height: 60px; }
+    .btn-row {
+      display: flex; gap: 10px; margin-top: 12px;
+    }
+    .btn-row button { flex: 1; padding: 8px; }
+    .small { font-size: 0.9em; color: #555; margin-bottom: 10px; }
+    .checkbox-row {
+      display: flex; align-items: center; gap: 8px; margin: 4px 0;
+    }
+  </style>
+</head>
+<body>
+  <!-- SECTION 1: Existing VRFs -->
+  <div class="section">
+    <h3>Select Logical Router</h3>
+    <label for="vrfSelect">Available Logical Routers:</label>
+    <select id="vrfSelect" onchange="onVrfChange()">
+      <option>Loading...</option>
+    </select>
+    <div class="btn-row">
+      <button onclick="handleDeleteVrf()">❌ Delete Logical Router</button>
+      <button onclick="loadVrfs()">🔄 Refresh Logical Routers</button>
+    </div>
+  </div>
+
+  <!-- SECTION 2: Create new VRF -->
+  <div class="section">
+    <h3>Create New Logical Router</h3>
+    <label for="vrfName">Logical Router Name:</label>
+    <input type="text" id="vrfName" placeholder="e.g. CORP_VRF">
+    <label for="vrfDesc">Description:</label>
+    <textarea id="vrfDesc" placeholder="optional (<1023 chars)"></textarea>
+    <div class="btn-row">
+      <button onclick="handleCreateVrf()">Create VRF</button>
+    </div>
+  </div>
+
+  <!-- SECTION 3: Interfaces in selected VRF -->
+  <div class="section">
+    <h3>Interfaces in Selected VRF</h3>
+    <div id="vrfMembersList" class="small">Loading...</div>
+    <div class="btn-row">
+      <button onclick="handleRemoveInterfaces()">➖ Del NIC from Logical Router</button>
+    </div>
+  </div>
+   <!-- SECTION 4: Add Interface to Logical Router -->
+  </div>
+
+  <div class="section">
+    <h3>Add Interfaces to Logical Router</h3>
+    <div id="availableInterfacesList" class="scroll-box">
+      <!-- Populated dynamically with checkboxes -->
+    </div>
+    <div class="btn-row">
+      <button onclick="handleAddInterfacesToVrf()">➕ Add NiC to Logical Router</button>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- SECTION 5: Static Routing -->
+  <hr>
+  <div class="section">
+    <h3>Static Routing</h3>
+    <div class="btn-row">
+      <button onclick="openStaticRoutesDialog()">📡 Manage Static Routes in Logical Router</button>
+    </div>
+  </div>
+
+  <!-- Final controls -->
+  <div class="section">
+    <div class="btn-row">
+      <button onclick="handleCancel()">Cancel</button>
+    </div>
+  </div>
+
+  <script>
+    function noopLogPing() {
+      google.script.run.noopLogPing("vrf");
+    }
+
+    function handleCancel() {
+      google.script.run.flushVrfLog?.();
+      google.script.host.close();
+    }
+
+    function loadVrfs() {
+      google.script.run
+        .withSuccessHandler(renderLogicalRouters)
+        .withFailureHandler(err => {
+          alert("❌ Error loading logical routers:\n" + err.message);
+          document.getElementById("vrfSelect").innerHTML = `<option>Error loading VRFs</option>`;
+        })
+       .loadLogicalRouters();
+    }
+
+    let routerCache = [];
+
+    function renderLogicalRouters(routerList) {
+      routerCache = routerList;
+      const select = document.getElementById("vrfSelect");
+      select.innerHTML = "";
+
+      if (!routerList.length) {
+        select.innerHTML = `<option disabled>No Logical Routers found</option>`;
+        return;
+      }
+
+      routerList.forEach(router => {
+        const opt = document.createElement("option");
+        opt.value = router.name;
+        opt.textContent = router.name;
+        select.appendChild(opt);
+      });
+
+      select.value = routerList[0].name;
+      setTimeout(() => onVrfChange(), 0);
+    }
+
+    function onVrfChange() {
+      const selectedName = document.getElementById("vrfSelect").value;
+      const router = routerCache.find(r => r.name === selectedName);
+      
+      if (!router) {
+        console.warn("❌ Selected router not found in cache");
+        document.getElementById("vrfMembersList").innerText = "No data";
+        return;
+      }
+
+      const vrfInterfaces = router?.vrf?.[0]?.interface || [];
+      const listDiv = document.getElementById("vrfMembersList");
+
+      if (!vrfInterfaces.length) {
+        listDiv.innerHTML = `<div class="small">No interfaces in this Logical Router.</div>`;
+      } else {
+        listDiv.innerHTML = "";
+        vrfInterfaces.forEach(nic => {
+          const row = document.createElement("div");
+          row.className = "checkbox-row";
+          const box = document.createElement("input");
+          box.type = "checkbox";
+          box.value = nic;
+          box.className = "nicCheckbox";
+          row.appendChild(box);
+          row.appendChild(document.createTextNode(nic));
+          listDiv.appendChild(row);
+        });
+      }
+
+      renderAvailableInterfaces(vrfInterfaces);
+    }
+    
+    function openStaticRoutesDialog() {
+      const selectedName = document.getElementById("vrfSelect").value;
+      if (!selectedName) {
+        alert("Please select a Logical Router first.");
+        return;
+      }
+      const router = routerCache.find(r => r.name === selectedName);
+      if (!router) {
+        alert("❌ Selected router not found.");
+        return;
+      }
+      google.script.run.showStaticRoutesDialogWithObject(JSON.stringify(router)); 
+    }
+
+    function renderAvailableInterfaces(vrfInterfaces) {
+      google.script.run
+        .withSuccessHandler(allInterfaces => {
+          const available = allInterfaces.filter(i => !vrfInterfaces.includes(i));
+          const listDiv = document.getElementById("availableInterfacesList");
+          listDiv.innerHTML = "";
+
+          if (!available.length) {
+            listDiv.innerText = "No unassigned interfaces found.";
+            return;
+          }
+
+          available.forEach(nic => {
+            const row = document.createElement("div");
+            row.className = "checkbox-row";
+            const box = document.createElement("input");
+            box.type = "checkbox";
+            box.value = nic;
+            row.appendChild(box);
+            row.appendChild(document.createTextNode(nic));
+            listDiv.appendChild(row);
+          });
+        })
+        .withFailureHandler(err => {
+          console.error("❌ Failed to fetch available interfaces", err);
+          document.getElementById("availableInterfacesList").innerText = "Error loading interfaces.";
+        })
+        .fetchInterfacesVlan();
+    }
+    
+    function handleDeleteVrf() {
+      const selectedName = document.getElementById("vrfSelect").value;
+      const vrf = routerCache.find(r => r.name === selectedName);
+      if (!vrf) {
+        alert("⚠️ Could not find selected Logical Router.");
+        return;
+      }
+
+      if (!confirm(`❌ Delete Logical Router "${vrf.name}"? This cannot be undone.`)) return;
+
+      google.script.run
+        .withSuccessHandler(() => {
+          alert(`✅ VRF "${vrf.name}" deleted.`);
+          const select = document.getElementById("vrfSelect");
+          select.innerHTML = `<option disabled>Refreshing...</option>`;
+          loadVrfs(); 
+        })
+        .withFailureHandler(err => {
+          alert("❌ Failed to delete Logical Router:\n" + err.message);
+        })
+        .deleteLogicalRouterById(vrf.id);
+    }
+    
+    function handleCreateVrf() {
+      const name = document.getElementById("vrfName").value.trim();
+      const desc = document.getElementById("vrfDesc").value.trim();
+
+      if (!name || !name.match(/^[a-zA-Z0-9_\-]+$/)) {
+        alert("⚠️ Enter a valid Logical Router name (letters, numbers, dash or underscore)");
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(res => {
+          alert("✅ Logical Router created successfully!");
+          document.getElementById("vrfName").value = "";
+          document.getElementById("vrfDesc").value = "";
+          loadVrfs(); // refresh list
+        })
+        .withFailureHandler(err => {
+          alert("❌ Failed to create Logical Router:\n" + err.message);
+        })
+        .createLogicalRouter(name, desc);
+    }
+
+    function handleRemoveInterfaces() {
+      const selected = [...document.querySelectorAll('.nicCheckbox:checked')]
+        .map(cb => cb.value);
+      if (selected.length === 0) {
+        alert("Please select one or more NICs to remove.");
+        return;
+      }
+
+      const vrfName = document.getElementById("vrfSelect").value;
+      google.script.run.logVrf(`🟠 RemoveInterfaces clicked for VRF "${vrfName}" — selected NICs: ${selected.join(", ") || "(none)"}`);
+      //disableAllButtons(true);
+      //setBusyCursor(true);
+
+      google.script.run
+        .withSuccessHandler(() => {
+          appendLog(`✅ Removed NIC(s): ${selected.join(', ')}`);
+          setTimeout(() => onVrfChange(), 300);        })
+        .withFailureHandler(err => {
+          appendLog(`❌ Error removing NICs: ${err.message}`);
+        })
+        .removeInterfacesFromVrf(vrfName, selected);
+    }
+
+    function loadAvailableInterfaces(interfaces) {
+      const container = document.getElementById('available-interfaces-list');
+      container.innerHTML = ''; // Clear existing
+
+      if (!interfaces.length) {
+        container.innerHTML = '<em>No interfaces available to add.</em>';
+        return;
+      }
+
+      interfaces.forEach(intf => {
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = intf;
+        checkbox.id = `add_${intf}`;
+
+        const label = document.createElement('label');
+        label.htmlFor = `add_${intf}`;
+        label.textContent = intf;
+
+        const div = document.createElement('div');
+        div.appendChild(checkbox);
+        div.appendChild(label);
+
+        container.appendChild(div);
+      });
+    }
+
+    function handleAddInterfacesToVrf() {
+      const vrfName = document.getElementById('vrfSelect').value;
+      const selected = Array.from(document.querySelectorAll('#availableInterfacesList input[type="checkbox"]:checked'))
+        .map(cb => cb.value);
+
+      //alert(`Selected VRF: ${vrfName}, Interfaces: ${selected.join(', ')}`);
+      if (!vrfName || selected.length === 0) {
+        alert("Please select a VRF and at least one interface.");
+        return;
+      }
+      
+      google.script.run
+        .withSuccessHandler(res => {
+          alert(`✅ ${selected.length} interfaces added to VRF "${vrfName}"`);
+          setBusyCursor(false);
+          setTimeout(() => location.reload(), 500); 
+        })
+        .withFailureHandler(err => {
+          alert("❌ Failed to add interfaces: " + err.message);
+          setBusyCursor(false);
+        })
+        .addInterfacesToVrf(vrfName, selected);
+    }
+    window.onload = function () {
+      noopLogPing();
+      setTimeout(() => { loadVrfs();}, 50);
+    };
+  </script>
+</body>
+</html>

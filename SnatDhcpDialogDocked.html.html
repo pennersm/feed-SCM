@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    body { font-family: system-ui, sans-serif; font-size: medium; padding: 16px; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    h3 { font-size: 16px; margin: 16px 0 8px; }
+    .subtext { font-size: 12px; color: #666; margin: 6px 0 8px; }
+    select { width: 100%; padding: 6px; margin: 4px 0 12px; box-sizing: border-box; }
+    ul { list-style: none; padding-left: 0; max-height: 120px; overflow-y: auto; border: 1px solid #ccc; margin: 0 0 12px; }
+    li { margin-bottom: 6px; }
+    .section { margin-bottom: 18px; border-bottom: 1px solid #e5e5e5; padding-bottom: 14px; }
+    .btn-row { display: flex; gap: 10px; }
+  </style>
+</head>
+<body>
+  <h1>NAT and DHCP Services</h1>
+
+  <!-- SECTION 1: Select L3 Interface (reused from ip2nic) -->
+  <div class="section">
+    <h3>Select L3 Interface</h3>
+    <div id="favoriteNicDisplay" class="subtext" style="font-weight:bold; color:#444;">Preferred NIC: —</div>
+
+    <select id="interfaceSelector" onchange="onInterfaceChange()">
+      <option value="">Loading…</option>
+    </select>
+
+    <div class="subtext">Assigned IPs to selected NIC</div>
+    <ul id="assignedIpList">
+      <li><i>Loading...</i></li>
+    </ul>
+  </div>
+
+  <!-- SECTION 2: Add SNAT (placeholder) -->
+  <div class="section">
+    <h3>Add SNAT</h3>
+    <div class="subtext">Coming next…</div>
+  </div>
+
+  <!-- SECTION 3: DHCP Server (placeholder) -->
+  <div class="section">
+    <h3>DHCP Server</h3>
+    <div class="subtext">Coming next…</div>
+  </div>
+
+  <!-- Footer -->
+  <div class="btn-row">
+    <button onclick="google.script.host.close()">Close</button>
+  </div>
+
+  <script>
+    // state mirrors ip2nic
+    let allInterfaces = [];
+
+    // log JS errors to SNAT-DHCP sheet
+    window.addEventListener('error', e => {
+      try { google.script.run.logSnatDhcp(`❌ JS error: ${e.message}`); } catch(_) {}
+    });
+
+    // onload: ping + load data
+    window.addEventListener("load", () => {
+      google.script.run.noopLogPing("snatdhcp");
+      google.script.run.logSnatDhcp("🟢 SNAT-DHCP Sidebar Opened");
+      initSnatDhcpDialog();
+    });
+
+    function initSnatDhcpDialog() {
+      loadInterfaces();
+    }
+
+    function loadInterfaces() {
+      google.script.run
+        .withSuccessHandler(renderInterfaces)
+        .withFailureHandler(e => {
+          google.script.run.logSnatDhcp("❌ Error loading interfaces: " + e.message);
+          alert("Error loading interfaces: " + e.message);
+          const sel = document.getElementById('interfaceSelector');
+          sel.innerHTML = '<option value="">Error loading interfaces</option>';
+          renderAssignedIps([]);
+          renderFavoriteNic(null);
+        })
+        // Reuse the SAME backend used by ip2nic
+        .fetchInterfaces();
+    }
+
+    // Expecting the SAME shape your ip2nic dialog uses:
+    // interfaces: [{ uuid, name, favorite, assignedIps: [string, ...] }, ...]
+    function renderInterfaces(interfaces) {
+      allInterfaces = Array.isArray(interfaces) ? interfaces : [];
+      const sel = document.getElementById('interfaceSelector');
+      sel.innerHTML = '';
+
+      if (allInterfaces.length === 0) {
+        sel.innerHTML = '<option value="">No interfaces found</option>';
+        renderAssignedIps([]);
+        renderFavoriteNic(null);
+        return;
+      }
+
+      // Only options for interfaces that have at least one assigned IP
+      allInterfaces.forEach(i => {
+        if (!Array.isArray(i.assignedIps) || i.assignedIps.length === 0) return;
+        const opt = document.createElement('option');
+        opt.value = i.uuid;
+        opt.textContent = i.name;
+        sel.appendChild(opt);
+      });
+
+      // If none match the filter, tell the user
+      if (sel.options.length === 0) {
+        sel.innerHTML = '<option value="">No interfaces with IPs available</option>';
+        renderAssignedIps([]);
+        renderFavoriteNic(null);
+        return;
+      }
+
+      sel.selectedIndex = 0;
+      const first = allInterfaces.find(i => i.uuid === sel.value);
+      renderAssignedIps(first?.assignedIps || []);
+      renderFavoriteNic(first);
+      google.script.run.logSnatDhcp(`✅ Loaded ${allInterfaces.length} interfaces; showing only ones with IPs`);
+    }
+
+    function onInterfaceChange() {
+      const selected = document.getElementById('interfaceSelector').value;
+      const iface = allInterfaces.find(i => i.uuid === selected);
+      renderAssignedIps(iface?.assignedIps || []);
+      renderFavoriteNic(iface);
+      if (iface?.name) {
+        google.script.run.logSnatDhcp(`🔖 Selected interface: ${iface.name}`);
+      }
+    }
+
+    function renderAssignedIps(ipList) {
+      const ul = document.getElementById('assignedIpList');
+      ul.innerHTML = '';
+
+      if (!Array.isArray(ipList) || ipList.length === 0) {
+        ul.innerHTML = '<li><i>No IPs assigned.</i></li>';
+        return;
+      }
+
+      ipList.forEach(ip => {
+        const li = document.createElement('li');
+        li.textContent = ip;
+        ul.appendChild(li);
+      });
+    }
+
+    function renderFavoriteNic(iface) {
+      const div = document.getElementById('favoriteNicDisplay');
+      if (!iface || !iface.favorite) {
+        div.textContent = 'Preferred NIC: no preferred ethernet';
+      } else {
+        div.textContent = `Preferred NIC: ${iface.favorite}`;
+      }
+    }
+  </script>
+</body>
+</html>

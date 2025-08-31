@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      font-size: medium;
+      padding: 20px;
+    }
+    .section {
+      margin-bottom: 25px;
+    }
+    .subsection {
+      font-size: 0.95em;
+      color: #444;
+      margin-top: 10px;
+    }
+    label {
+      display: block;
+      margin-top: 8px;
+    }
+    input[type="text"], select, textarea {
+      width: 100%;
+      padding: 6px;
+      box-sizing: border-box;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 60px;
+    }
+    .small {
+      font-size: 0.9em;
+      color: #555;
+      margin-bottom: 10px;
+    }
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 15px;
+    }
+    .btn-row button {
+      flex: 1;
+      padding: 8px;
+    }
+    hr {
+      margin: 20px 0;
+    }
+    .ip-toggle input[type="checkbox"] {
+      appearance: checkbox;
+      -webkit-appearance: checkbox;
+      width: auto;
+      height: auto;
+      border: none;
+    }
+    .ip-toggle input[type="checkbox"]:checked::before { content: none; }
+    .ip-row {
+      display: flex;
+      align-items: center;
+      margin: 4px 0;
+    }
+    .ip-radio {
+      margin-right: 6px;
+    }
+    #availableIpList {
+      margin-top: 6px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Section 1: Interface chooser -->
+  <div class="section">
+    <label for="interfaceSelect">Select Snippet Interface:</label>
+    <div id="favoriteNicDisplay" style="margin-top:6px; font-style:italic; font-size: 12px;">
+      Preferred NIC: —
+    </div>
+    <select id="interfaceSelect" onchange="onInterfaceChange()">
+      <option value="">Loading...</option>
+    </select>
+  </div>
+
+  <!-- Section 2: Subinterface deletion -->
+  <div class="section">
+    <label>Existing Subinterfaces (check to delete):</label>
+    <div id="subinterfacesList"></div>
+    <div class="btn-row">
+      <button onclick="handleDelete()">Delete Selected</button>
+      <button onclick="loadSubinterfaces()">🔄 Refresh Subinterfaces</button>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- Section 3: Add new VLAN -->
+  <div class="section">
+    <h3>Create SubIF </h3>
+
+    <label for="vlanTag">VLAN Tag:</label>
+    <input type="text" id="vlanTag">
+
+    <label for="vlanDesc">Description:</label>
+    <textarea id="vlanDesc" placeholder="optional (<1023 chars)"></textarea>
+    
+    <label for="ipAddress">:</label>
+    <input type="text" id="ipAddress" placeholder="e.g. 192.0.2.10/24">
+    <div style="height:10px;"></div>
+
+    <div class="subsection" style="font-weight:500; font-size:1.05em; color:#333;">
+      Available IPs
+    </div>
+    <hr style="margin:8px 0 6px;">
+
+    <div class="ip-toggle" style="margin-top:2px; font-size:0.9em;">
+      <input type="checkbox" id="ipFilterToggle" onchange="toggleIpFilter()">
+      <span>Unused IPs only</span>
+    </div>
+    <div id="availableIpList" class="small">Loading IPs...</div>
+
+    <div class="btn-row">
+      <button onclick="handleCreate()">Create Subinterface</button>
+    </div>
+  </div>
+
+  <hr>
+
+  <!-- Section 4: Cancel -->
+  <div class="section">
+    <div class="btn-row">
+      <button onclick="handleCancel()">Cancel</button>
+    </div>
+  </div>
+
+  <script>
+    let nicFavorites = {};
+    let apiTouched = false;
+    let snippetName = '';
+    let selectedNic = '';
+    let allIps = [];
+    let assignedIps = [];
+
+    function noopLogPing() {
+      google.script.run.noopLogPing("vlan");
+    }
+
+    function loadBaseconf() {
+      apiTouched = true;
+      google.script.run
+        .withSuccessHandler(data => {
+          snippetName = data.snippet;
+          loadInterfaces();
+        })
+        .getBaseconfSnippetData();
+    }
+
+    function loadInterfaces() {
+      apiTouched = true;
+      google.script.run
+        .withSuccessHandler(renderInterfaces)
+        .fetchInterfacesVlan();
+    }
+
+    function renderInterfaces(list) {
+      const select = document.getElementById("interfaceSelect");
+      select.innerHTML = "";
+      nicFavorites = {}; 
+
+      // take this away again if you want to see .x subinterfaces, which makes no sense
+      const mainOnly = (list || []).filter(name =>
+        typeof name === "string" && !/\.\d+$/.test(name)
+      );
+      const src = mainOnly.length ? mainOnly : (list || []);
+
+      if (src.length === 0) {
+        select.innerHTML = "<option value=''>No interfaces found</option>";
+        return;
+      }
+      src.forEach(name => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+      select.value = src[0];
+      selectedNic = src[0];
+
+      google.script.run
+        .withSuccessHandler(allInterfaces => {
+          allInterfaces.forEach(i => {
+            nicFavorites[i.name] = i.favorite || null;
+          });
+          renderFavoriteNicInVlan(selectedNic);
+        })
+        .fetchInterfaces()
+      setTimeout(() => {
+        loadSubinterfaces();
+        loadAvailableIps();
+      }, 200);
+    }
+
+    function renderFavoriteNicInVlan(name) {
+      const div = document.getElementById("favoriteNicDisplay");
+      const fav = nicFavorites[name];
+      div.textContent = fav
+        ? `Preferred NIC: ${fav}`
+        : "Preferred NIC: no preferred ethernet";
+    }
+    
+
+    function loadSubinterfaces() {
+      const nic = document.getElementById("interfaceSelect").value;
+      if (!nic) return;
+      apiTouched = true;
+      google.script.run
+        .withSuccessHandler(renderSubinterfaces)
+        .getSubinterfacesForInterface(nic);
+    }
+    
+    function renderSubinterfaces(list) {
+      const container = document.getElementById("subinterfacesList");
+      container.innerHTML = "";
+
+      google.script.run.logVlan(`📥 renderSubinterfaces() received list: ${JSON.stringify(list, null, 2)}`);
+
+      if (!list || list.length === 0) {
+        container.innerHTML = "<div class='small'>No subinterfaces found.</div>";
+        return;
+      }
+
+      google.script.run.logVlan(`✅ Rendering ${list.length} subinterfaces to DOM`);
+
+      list.forEach(item => {
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.marginBottom = "6px";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = item.uuid;
+        checkbox.className = "subif-checkbox";
+        checkbox.style.marginRight = "8px";
+
+        const label = document.createElement("label");
+        label.textContent = item.name;
+        label.style.margin = "0";
+        label.style.fontSize = "0.95em";
+
+        row.appendChild(checkbox);
+        row.appendChild(label);
+        container.appendChild(row);
+      });
+    }
+    
+    function onInterfaceChange() {
+      const dropdown = document.getElementById("interfaceSelect");
+      selectedNic = dropdown.value;
+      if (!selectedNic) return;
+      renderFavoriteNicInVlan(selectedNic);  
+      loadSubinterfaces();
+      loadAvailableIps();
+    }
+
+    function loadAvailableIps() {
+      apiTouched = true;
+      //google.script.run.logVlan("[FRONTEND] : loadAvailableIps() called");
+      google.script.run
+        .withSuccessHandler(res => {
+          //google.script.run.logVlan("📥 SuccessHandler for IPs triggered");
+          //google.script.run.logVlan("📦 RAW res from getAvailableIpVars: " + JSON.stringify(res)); 
+          
+          if (Array.isArray(res))  {
+            allIps = res.map(v => ({
+              name: v.name,
+              value: v.value,
+              description: v.description || ""
+            }));
+            assignedIps = [];  
+            google.script.run.logVlan("⚠️ Res was a raw array — wrapped into { all, assigned }");
+          } else {
+            allIps = res.all || [];
+            assignedIps = res.assigned || [];
+            //google.script.run.logVlan(`✅ Parsed IPs: all=${allIps.length}, assigned=${assignedIps.length}`);
+          }
+          
+          if (allIps.length === 0) {
+            google.script.run.logVlan("[FRONTEND] : no IPs received to render" );
+            return;
+          } 
+          renderAvailableIps();
+        })
+        .withFailureHandler(err => {
+          google.script.run.logVlan("❌ Failed to fetch IPs: " + err.message);
+        })
+        //.getAvailableIpVars({ for: "vlan" } ); 
+        .getAvailableIpVars(
+          selectedNic,
+          document.getElementById("ipFilterToggle").checked
+        );
+    }
+
+    function toggleIpFilter() {
+      loadAvailableIps();
+    }
+
+    function renderAvailableIps() {
+      const container = document.getElementById("availableIpList");
+      container.innerHTML = ""; // clear previous content
+
+      const showUnusedOnly = document.getElementById("ipFilterToggle").checked;
+
+      let displayList = allIps;
+      if (showUnusedOnly) {
+        const assignedNames = assignedIps.map(ip => ip.name);
+        displayList = allIps.filter(ip => !assignedNames.includes(ip.name));
+      }
+
+      if (displayList.length === 0) {
+        container.textContent = "⚠️ No available IP variables";
+        return;
+      }
+
+      displayList.forEach(ip => {
+        const row = document.createElement("div");
+        row.className = "ip-row";
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.className = "ip-checkbox";
+        cb.value = ip.name;
+        cb.id = `ip_${ip.name}`;
+
+        const label = document.createElement("label");
+        label.htmlFor = cb.id;
+        label.textContent = `${ip.name} (${ip.value})`;
+        label.style.marginLeft = "6px";
+
+        row.appendChild(cb);
+        row.appendChild(label);
+        container.appendChild(row);
+      });
+    }
+
+    function handleCreate() {
+      const tag = document.getElementById("vlanTag").value.trim();
+      const desc = document.getElementById("vlanDesc").value.trim();
+      const parent = document.getElementById("interfaceSelect").value;
+
+      if (!tag || isNaN(tag)) {
+        alert("Please enter a valid VLAN tag (integer).");
+        return;
+      }
+      if (!parent) {
+        alert("Select a parent NIC interface first.");
+        return;
+      }
+      
+      const subifName = `${parent}.${tag}`;
+      const selectedIps = Array.from(document.querySelectorAll(".ip-checkbox:checked")).map(cb => cb.value);
+      const ipAddress = (document.getElementById("ipAddress").value || "").trim();
+      if (ipAddress) {
+        if (!selectedIps.includes(ipAddress)) {
+          selectedIps.push(ipAddress);
+        }
+      }
+      
+      apiTouched = true;
+      google.script.run
+        .withSuccessHandler(() => {
+          alert(`✅ Subinterface ${subifName} created.`);
+          document.getElementById("vlanTag").value = "";
+          document.getElementById("vlanDesc").value = "";
+          document.getElementById("ipAddress").value = "";
+          loadSubinterfaces();
+        })
+        .withFailureHandler(err => alert("❌ VLAN creation failed: " + err.message))
+        .createSubinterface(tag, desc, subifName, parent, selectedIps, ipAddress);
+    }
+
+    function handleDelete() {
+      const checkboxes = document.querySelectorAll(".subif-checkbox:checked");
+      const uuids = Array.from(checkboxes).map(cb => cb.value);
+      if (uuids.length === 0) {
+        alert("Please select subinterfaces to delete.");
+        return;
+      }
+      if (!confirm(`Delete ${uuids.length} subinterface(s)?`)) return;
+
+      apiTouched = true;
+      google.script.run
+        .withSuccessHandler(res => {
+          alert(`✅ Deleted ${res.successCount} subinterfaces.`);
+          loadSubinterfaces();
+        })
+        .withFailureHandler(err => alert("❌ Deletion failed: " + err.message))
+        .deleteSelectedSubinterfaces(uuids);
+    }
+
+    function handleCancel() {
+      if (apiTouched) {
+        google.script.run.flushVlanLog?.();
+      }
+      google.script.host.close();
+    }
+
+    window.onload = function () {
+      noopLogPing();
+      loadBaseconf();
+    };
+  </script>
+</body>
+</html>

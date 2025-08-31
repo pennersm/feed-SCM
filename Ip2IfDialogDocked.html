@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 20px;
+        margin-bottom: 16px;
+      }
+      h3 {
+        font-size: 16px;
+        margin-top: 20px;
+        margin-bottom: 8px;
+      }
+      .subtext {
+        font-size: 12px;
+        color: #666;
+        margin-bottom: 8px;
+      }
+      select, input[type="text"] {
+        width: 100%;
+        padding: 6px;
+        margin-top: 4px;
+        margin-bottom: 12px;
+      }
+      button {
+        padding: 6px 10px;
+        margin-top: 6px;
+        cursor: pointer;
+      }
+      ul {
+        list-style: none;
+        padding-left: 0;
+        max-height: 120px;
+        overflow-y: auto;
+        border: 1px solid #ccc;
+        margin-bottom: 12px;
+      }
+      li {
+        margin-bottom: 6px;
+      }
+      .section {
+        margin-bottom: 24px;
+        border-bottom: 1px solid #ccc;
+        padding-bottom: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>IP Interface Management</h1>
+
+    <script>
+      function noopLogPingFrontend() {
+        google.script.run
+          .withFailureHandler(e => console.error("noopLogPing failed:", e.message))
+          .noopLogPing("ip2nic");
+      }
+
+      function onDialogLoad() {
+        noopLogPingFrontend();
+        initIp2IfDialog();
+      }
+
+      window.addEventListener("load", onDialogLoad);
+    </script>
+
+    <!-- Select L3 Interface -->
+    <div class="section">
+      <h3>Select Snippet Interface</h3>
+      <div id="favoriteNicDisplay" class="subtext" style="font-weight: bold; color: #444;"></div>
+      <select id="interfaceSelector" onchange="onInterfaceChange()"></select>
+      <div class="subtext">Assigned IPs to selected NIC</div>
+
+      <ul id="assignedIpList">
+        <li><i>Loading...</i></li>
+      </ul>
+
+      <button onclick="removeNic()">Remove NIC</button>
+      <span style="display:inline-block; width:10px;"></span>
+      <button onclick="refreshInterfaces()">🔄 Refresh</button>
+    </div>
+
+    <!-- Add IP-Addr Variable to snippet -->
+    <div class="section">
+      <h3>Add New IP Address Variable</h3>
+      <label>IP Address:</label>
+      <input type="text" id="newIpAddress" placeholder="e.g., 192.168.1.1/24">
+      <label>Variable Name:</label>
+      <input type="text" id="newIpVarName" placeholder="e.g., $NEW_IP_VAR">
+      <button onclick="addNewIpVariable()">Add IP Address Variable</button>
+    </div>
+
+    <!-- Add IP to New NIC Variable -->
+    <div class="section">
+      <h3>Create L3 NIC with IP</h3>
+      <label>Preferred Interface:</label>
+      <select id="preferredNic"></select>
+
+      <label>NIC Variable Name:</label>
+      <input type="text" id="newNicVarName" placeholder="e.g., $NIC_ETH1_24">
+
+      <label style="display:block; margin-top:10px;">
+        <input type="checkbox" id="filterUnusedIps" checked onchange="loadAllIpVars()"> unused IPs only
+      </label>
+
+      <ul id="ipMultiSelectList">
+        <li><i>Loading IPs...</i></li>
+      </ul>
+
+      <button onclick="addInterface()">Add Interface</button>
+    </div>
+
+    <!-- Cancel -->
+    <div>
+      <button onclick="google.script.host.close()">Cancel</button>
+    </div>
+
+    <script>
+      let allInterfaces = [];
+      let allIps = [];
+
+      function initIp2IfDialog() {
+        loadInterfaces();
+        loadAllIpVars();
+        populateNicChooser();
+      }
+
+      function loadInterfaces() {
+        google.script.run
+          .withSuccessHandler(renderInterfaces)
+          .withFailureHandler(e => alert("Error loading interfaces: " + e.message))
+          .fetchInterfaces();
+      }
+
+      function refreshInterfaces() {
+        loadInterfaces(); 
+      }
+
+      function renderInterfaces(interfaces) {
+        allInterfaces = interfaces;
+        const sel = document.getElementById('interfaceSelector');
+        sel.innerHTML = '';
+
+        interfaces.forEach(i => {
+          const opt = document.createElement('option');
+          opt.value = i.uuid;
+          opt.text = i.name;
+          sel.appendChild(opt);
+        });
+
+        if (interfaces.length > 0) {
+          sel.selectedIndex = 0;
+          renderAssignedIps(interfaces[0].assignedIps || []);
+          renderFavoriteNic(interfaces[0]);
+        } else {
+          renderAssignedIps([]);
+        };
+
+        window.nicMap = Object.fromEntries(
+          interfaces.map(i => [i.uuid, i]) // or [i.name, i] depending on use
+        );
+      }
+
+      function onInterfaceChange() {
+        const selected = document.getElementById('interfaceSelector').value;
+        const iface = allInterfaces.find(i => i.uuid === selected);
+        renderAssignedIps(iface?.assignedIps || []);
+        renderFavoriteNic(iface); 
+      }
+
+      function renderAssignedIps(ipList) {
+        const ul = document.getElementById('assignedIpList');
+        ul.innerHTML = '';
+
+        if (!ipList || ipList.length === 0) {
+          ul.innerHTML = '<li><i>No IPs assigned.</i></li>';
+          return;
+        }
+
+        ipList.forEach(ip => {
+          const li = document.createElement('li');
+          li.textContent = ip;
+          ul.appendChild(li);
+        });
+      }
+
+      function removeNic() {
+        const selected = document.getElementById('interfaceSelector').value;
+        google.script.run
+          .withFailureHandler(e => alert("Failed to remove NIC: " + e.message))
+          .removeNicVariable(selected);
+      }
+
+      function addNewIpVariable() {
+        const ip = document.getElementById('newIpAddress').value.trim();
+        const name = document.getElementById('newIpVarName').value.trim();
+        if (!ip || !name) {
+          alert("Both IP and variable name are required.");
+          return;
+        }
+        google.script.run
+          .withSuccessHandler(() => {
+            document.getElementById('newIpAddress').value = '';
+            document.getElementById('newIpVarName').value = '';
+            loadAllIpVars();
+            alert("✅ IP variable added.");
+          })
+          .withFailureHandler(e => alert("Failed to add IP variable: " + e.message))
+          .addNewIpVariable(ip, name);
+      }
+ 
+      function populateNicChooser() {
+        const nicSel = document.getElementById('preferredNic');
+        nicSel.innerHTML = '';
+
+        const noneOpt = document.createElement('option');
+        noneOpt.value = 'none';
+        noneOpt.text = '(none)';
+        nicSel.appendChild(noneOpt);
+
+        for (let i = 1; i <= 24; i++) {
+          const opt = document.createElement('option');
+          opt.value = `ethernet1/${i}`;
+          opt.text = `ethernet1/${i}`;
+          nicSel.appendChild(opt);
+        }
+      }
+
+      function loadAllIpVars() {
+        const unusedOnly = document.getElementById('filterUnusedIps').checked;
+        google.script.run
+          .withSuccessHandler(res => {
+            const list = Array.isArray(res) ? res : (res.all || [] );
+            renderIpMultiList(list);
+          })
+          .withFailureHandler(e => alert("Failed to load IP variables: " + e.message))
+          .getAvailableIpVars({ for: "ip2nic" , unusedOnly } );
+      }
+
+      function renderFavoriteNic(iface) {
+        const div = document.getElementById('favoriteNicDisplay');
+        if (!iface || !iface.favorite) {
+          div.textContent = 'Preferred NIC: no preferred ethernet';
+        } else {
+           div.textContent = `Preferred NIC: ${iface.favorite}`;
+        }
+      }
+
+      function renderIpMultiList(ips) {
+        allIps = ips;
+        const ul = document.getElementById('ipMultiSelectList');
+        ul.innerHTML = '';
+
+        if (ips.length === 0) {
+          ul.innerHTML = '<li><i>No IPs found.</i></li>';
+          return;
+        }
+
+        ips.forEach(ip => {
+          const li = document.createElement('li');
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.value = ip.name;
+          li.appendChild(cb);
+          li.appendChild(document.createTextNode(` ${ip.name}`));
+          ul.appendChild(li);
+        });
+      }
+
+      function addInterface() {
+        let interfaceName = document.getElementById('preferredNic').value;
+        if (!interfaceName) interfaceName = null;
+        const nicVarName = document.getElementById('newNicVarName').value.trim();
+
+        if (!interfaceName || !nicVarName) {
+          alert("Please fill in interface and NIC variable name.");
+          return;
+        }
+
+        const selectedIps = Array.from(document.querySelectorAll('#ipMultiSelectList input[type=checkbox]:checked')).map(cb => cb.value);
+        if (selectedIps.length === 0) {
+          alert("Please select at least one IP variable to assign.");
+          return;
+        }
+
+        google.script.run
+            .withSuccessHandler(() => {
+              document.getElementById('newNicVarName').value = '';
+              document.querySelectorAll('#ipMultiSelectList input[type=checkbox]')
+                .forEach(cb => cb.checked = false);
+              loadAllIpVars();
+              populateNicChooser();
+              const nicSelect = document.getElementById("interfaceSelector");
+              if (nicSelect) {
+                nicSelect.value = nicVarName;
+                nicSelect.dispatchEvent(new Event("change"));
+              }
+            }) 
+          .withFailureHandler(e => alert("Failed to create NIC: " + e.message))
+          .createNicVariable(interfaceName, nicVarName, selectedIps);
+      }
+    </script>
+  </body>
+</html>

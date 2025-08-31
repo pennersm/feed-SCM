@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        font-size: 12px;
+        margin: 10px;
+      }
+      .section {
+        margin-bottom: 16px;
+        border-bottom: 1px solid #ccc;
+        padding-bottom: 12px;
+      }
+      .tag-entry {
+        display: flex;
+        align-items: center;
+        margin-bottom: 4px;
+      }
+      .color-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        margin-right: 6px;
+        display: inline-block;
+      }
+      input[type="text"], textarea {
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 4px;
+        margin-bottom: 8px;
+        padding: 4px;
+        font-size: 12px;
+      }
+      .button {
+        margin-top: 8px;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="section">
+      <h4>Tags</h4>
+      <div id="tagList">Loading tags...</div>
+      <label for="newTagName">Add new tag</label>
+      <input type="text" id="newTagName" placeholder="Tag name">
+      <label for="newTagDesc">Description (optional, &lt;1024 chars)</label>
+      <textarea id="newTagDesc" placeholder="Tag description (optional)"></textarea>
+      <button class="button" onclick="createNewTag()">Create new tag</button>
+    </div>
+    <!--  Address Groups section -->
+    <div class="section">
+      <h4>Address Groups</h4>
+      <div id="addrGroupList">Loading address groups...</div>
+    </div>
+    <div class="section">
+      <button class="button" onclick="submitSelectedTags()">Assign to address object</button>
+    </div>
+    <script>
+      function fetchAndRenderTags() {
+        google.script.run
+          .withSuccessHandler(function(tags) {
+            const tagList = document.getElementById('tagList');
+            tagList.innerHTML = '';
+            if (!tags.length) {
+              tagList.innerHTML = '<i>No tags available</i>';
+              return;
+            }
+            tags.forEach(tag => {
+              const row = document.createElement('div');
+              row.className = 'tag-entry';
+              row.innerHTML = `
+                <input type="checkbox" value="${tag.name}">
+                <span class="color-dot" style="background-color: ${tag.color};"></span>
+                <span>${tag.name}</span>
+              `;
+              tagList.appendChild(row);
+            });
+          })
+          .withFailureHandler(function(err) {
+            document.getElementById('tagList').innerHTML = '<i>:x: Error loading tags</i>';
+            alert(":x: Failed to fetch tags: " + (err.message || err));
+          })
+          .fetchTags();
+      }
+      function fetchAndRenderAddressGroups() {
+        google.script.run
+          .withSuccessHandler(function(groups) {
+            const list = document.getElementById('addrGroupList');
+            list.innerHTML = '';
+            if (!groups.length) {
+              list.innerHTML = '<i>No address groups available</i>';
+              return;
+            }
+            const noneRow = document.createElement('div');
+            noneRow.className = 'tag-entry';
+            noneRow.innerHTML = `
+              <input type="radio" name="addrGroup" value="" checked>
+              <span><i>No address group</i></span>
+            `;
+            list.appendChild(noneRow);
+            
+            groups.forEach(group => {
+              if (group.type !== "dynamic" && group.type !== "static") return; 
+              const row = document.createElement('div');
+              row.className = 'tag-entry';
+              row.innerHTML = `
+                <input type="radio" name="addrGroup" value='${JSON.stringify(group)}'>
+                <span>${group.name}</span>
+              `;
+              list.appendChild(row);
+            });
+          })
+          .withFailureHandler(function(err) {
+            document.getElementById('addrGroupList').innerHTML = '<i>:x: Error loading address groups</i>';
+            alert(":x: Failed to fetch address groups: " + (err.message || err));
+          })
+          .fetchAddressGroupsBE();
+      }
+      function createNewTag() {
+        const name = document.getElementById('newTagName').value.trim();
+        const desc = document.getElementById('newTagDesc').value.trim();
+        if (!name) {
+          alert('Please enter a tag name.');
+          return;
+        }
+        google.script.run
+          .withSuccessHandler(() => {
+            document.getElementById('newTagName').value = '';
+            document.getElementById('newTagDesc').value = '';
+            fetchAndRenderTags(); // Refresh tag list
+          })
+          .withFailureHandler(err => {
+            alert(':x: Failed to create tag: ' + (err.message || err));
+          })
+          .createNewTag(name, desc);
+      }
+      function submitSelectedTags() {
+        const selectedTags = [...document.querySelectorAll('#tagList input[type="checkbox"]:checked')]
+          .map(cb => cb.value);
+        const groupRadio = document.querySelector('#addrGroupList input[type="radio"]:checked');
+        const selectedGroup = groupRadio ? groupRadio.value : "";
+        let groupObj = null;
+
+        if (groupRadio && groupRadio.value.trim()) {
+          try {
+            groupObj = JSON.parse(groupRadio.value);
+          } catch (e) {
+            alert("❌ Could not parse selected Address Group.");
+            return
+          }
+        }
+        google.script.run
+          .withFailureHandler(err => {
+            alert("❌ " + (err.message || err));
+          })
+          .assignTagsAndGroupToSheet(selectedTags, groupObj);
+      }
+      fetchAndRenderTags();
+      fetchAndRenderAddressGroups();
+    </script>
+  </body>
+</html>
